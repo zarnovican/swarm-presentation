@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Docker Swarm - evaluation</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+    <style type="text/css">
+      /* Slideshow styles */
+    </style>
+  </head>
+  <body>
+    <textarea id="source">
+
+class: center, middle
+
+# Docker Swarm - evaluation
+
+# (rychly tutorial)
+
+---
+
+# Swarm - init/join
+
+## Prvy (management) nod:
+
+```bash
+docker swarm init
+```
+
+--
+
+## Pridal dalsi management nod
+
+```bash
+$ docker swarm join-token manager
+To add a manager to this swarm, run the following command:
+
+    docker swarm join \
+    --token SWMTKN-1-1m6rhefuj6eohyemyys8bq5abnrwey3i34cliimfiorek4vind-3qf2r5u5monp8ei2rbeydo5sm \
+    192.168.122.12:2377
+
+$
+```
+
+--
+
+## ..alebo dalsi worker nod:
+
+```bash
+$ docker swarm join-token worker
+To add a worker to this swarm, run the following command:
+
+    docker swarm join \
+    --token SWMTKN-1-1m6rhefuj6eohyemyys8bq5abnrwey3i34cliimfiorek4vind-396q8rdbypjw8zxk2tb18rz75 \
+    192.168.122.12:2377
+
+$
+```
+
+---
+
+# Swarm - mgmt nod bez service-ov
+
+## By default, mgmt noda moze hostovat service-y
+
+--
+
+## Alebo ju das do stavu `Drain`
+```bash
+$ docker node update --availability drain vm3
+```
+
+--
+
+```bash
+$ docker node ls
+ID                           HOSTNAME  STATUS  AVAILABILITY  MANAGER STATUS
+5am8q9daj9qgpirkvhy5c750n *  vm2       Ready   Active        Leader
+lkfsazhq5lg0vfqnifohiblas    vm4       Ready   Active        Reachable
+mo6r9g160vlkgm8ok293az4ui    vm3       Ready   Drain         Reachable
+```
+
+---
+
+# Node - labels
+
+## pridat/ubrat node label
+
+```bash
+$ docker node update --label-add instance_type=c3.medium vm2
+$ docker node update --label-add cluster=provisioning    vm4
+```
+
+--
+
+## labels su dobre na "service placement"
+
+```bash
+docker service update --constraint-add node.labels.cluster==provisioning helloworld
+```
+
+--
+
+## pokial si chces zistit kto ma ten label
+
+```bash
+$ docker node ls                    # nevypisuje labels
+$ docker node ls -f label=value     # filter na labels neexistuje
+```
+
+--
+
+## musis si to pracne vypisat one-by-one
+
+```bash
+$ docker node inspect vm2 --pretty
+...
+Labels:
+ - instance_type = c3.medium
+```
+
+---
+
+# Service
+
+## create cez command-line
+
+```bash
+docker service create --name helloworld --replicas 3 dockercloud/hello-world
+```
+
+--
+
+## jednoduche pre jednoduce services
+
+--
+
+## nie je ziadny stop/start, service sa musi zmazat
+
+--
+
+## konfiguracia cez CLI args, alebo env premenne
+
+```bash
+$ docker service create --name helloworld -e FOO=bar --replicas 3 dockercloud/hello-world arg1 arg2
+$ docker service inspect helloworld --pretty
+...
+ContainerSpec:
+ Image:     dockercloud/hello-world:latest@sha256:7c53ccb0442e81e924f1076538963fdfe6ea37d...
+ Args:      arg1 arg2 
+ Env:       FOO=bar 
+```
+
+--
+
+## konfiguracne file-y len cez "workaround"y
+
+* ako secret, ktory nie je secret
+* bind mount z hostu (ale kto konfig da na kazdy host?)
+* volume zo zdielaneho uloziska (NFS?)
+
+--
+
+## praktickejsie je na konfig file-y zabudnut
+
+---
+
+# Service - template variables
+
+## sposob ako predat info zo Swarmu do kontaineru
+
+```bash
+{{.Service.ID}}         "b26bya8rsad1jn6tvr6hzozii"
+{{.Service.Name}}       "helloworld"
+{{.Service.Labels}}     "map[foo:1 bar:7]" 
+{{.Node.ID}}            "5am8q9daj9qgpirkvhy5c750n"
+{{.Task.ID}}            "3o381d4n98jx89tiwrfc7j6rr"
+{{.Task.Name}}          "helloworld.1.c1nay11q2mpoj8sbqalnx5vgf"
+{{.Task.Slot}}          "1"
+```
+
+--
+
+## funguje na --hostname, --env, ale uz nie na argumenty
+
+```bash
+docker update..
+    --hostname "{{.Node.ID}}" \
+    --env-add DOCKER_TASK_NAME="{{.Task.Name}}" \
+    --env-add DOCKER_TASK_SLOT="{{.Task.Slot}}" \
+```
+
+---
+
+# Service - rolling update
+
+## kazdy "docker service update" vyvola rolling update
+
+--
+
+## meni sa moze skoro vsetko
+
+### docker image/tag
+### env premmene
+### docker argumenty
+
+--
+
+## "create" a "update" maju roznu syntax
+
+```bash
+docker service create \
+    --name helloworld \
+    --mount type=bind,source=/dev/log,destination=/dev/log \
+    --hostname "{{.Node.ID}}" \
+    --env SERVICE_NAME="{{.Service.Name}}" \
+    --publish 8081:80 \
+    dockercloud/hello-world
+```
+
+```bash
+docker service update \
+    --mount-add type=bind,source=/dev/log,destination=/dev/log \
+    --hostname "{{.Node.ID}}" \
+    --env-add SERVICE_NAME="{{.Service.Name}}" \
+    --publish-add 8081:80 \
+    --image dockercloud/hello-world \
+    helloworld
+```
+--
+
+## cely batch zmien sa aplikuje naraz
+
+---
+
+# Service - update
+
+## option --cosi-add funguje ako UPSERT
+
+```bash
+docker service update --env-add FOO=bar helloworld
+```
+
+--
+
+## pocet instancii sa meni cez "scale"
+
+create:
+```bash
+docker service create --replicas 3 helloworld
+```
+update:
+```bash
+docker service scale helloworld=4
+```
+
+---
+
+# Service - definicia v git-e
+
+## minimalny create
+
+```bash
+docker service create --name helloworld busybox top
+```
+
+--
+
+## v git-e jeden VELKY update
+
+```bash
+docker service update \
+    --mount-add type=bind,source=/dev/log,destination=/dev/log \
+    --hostname "{{.Node.ID}}" \
+    --env-add SERVICE_NAME="{{.Service.Name}}" \
+    --env-add DOCKER_TASK_NAME="{{.Task.Name}}" \
+    --env-add DOCKER_TASK_SLOT="{{.Task.Slot}}" \
+    --env-add FOO=baz \
+    --image dockercloud/hello-world \
+    --args '' \
+    --publish-add 8081:80 \
+    helloworld
+```
+(moze byt napr manage-ovany ansiblom, alebo obycajny repo clone)
+
+--
+
+## "scale" moze byt v git-e niekde spolu s update-om
+
+---
+
+# Service - secrets
+
+## create secret "sentry_dsn"
+
+```bash
+$ echo "http://xxx:yyy@sentry/" | docker secret create sentry_dsn -
+```
+
+--
+
+## namapovat do service
+
+```bash
+docker service update --secret-add sentry_dsn helloworld
+```
+```bash
+$ docker exec -it 9f1c72177a2a cat /run/secrets/sentry_dsn
+http://xxx:yyy@sentry/
+```
+
+--
+
+## secrets su immutable
+
+--
+
+## rotovanie, novy kluc s inym menom (datum suffix?)
+
+```bash
+docker service update \
+    --secret-add sentry_dsn201701 \
+    --env-add SENTRY_DSN="secret:sentry_dsn201701" \
+    helloworld
+```
+
+## a rucne odmapovat stary secret
+
+```bash
+docker service update --secret-rm sentry_dsn201610 helloworld
+```
+
+---
+
+# Reservations
+
+## chcem 10MB a 0.6 CPU pre svoju service
+
+```bash
+docker service update --reserve-memory $((1024*1024*10)) --reserve-cpu 0.6 helloworld
+```
+
+--
+
+## rezervacie funguju, ale tazko zistit ked nefunguju
+
+```bash
+$ docker service scale helloworld=3
+$ docker service ps helloworld 
+ID            NAME          IMAGE           NODE  DESIRED STATE  CURRENT STATE               ERROR  PORTS
+90j6e2eyid21  helloworld.1  busybox:latest        Running        Pending 6 seconds ago              
+px8b4ktpy532  helloworld.2  busybox:latest  vm4   Running        Running about a minute ago         
+r4y5hb671e56  helloworld.3  busybox:latest  vm3   Running        Running 6 seconds ago              
+```
+(mam len dvoch workerov po 1x CPU, treti sa nezmesti)
+
+--
+
+### vies len total, ale nie nakolko je to zaplnene
+
+```bash
+$ docker info
+...
+CPUs: 1
+Total Memory: 992.3 MiB
+
+$ docker node inspect vm3 --pretty
+...
+Resources:
+ CPUs:          1
+ Memory:        992.3 MiB
+```
+
+---
+
+# Troubleshooting
+
+--
+
+## mas problem? vyries si ho sam!
+
+--
+
+## Swarm ma dost slabe logovanie
+
+--
+
+### nema nic ako "swarm" log. Napr: "teraz update-ujem sluzbu X"
+
+--
+
+### service log zatial neexistuje
+
+```bash
+$ docker service logs helloworld
+only supported with experimental daemon
+```
+
+--
+
+### "docker logs" na workeri nepomaha, lebo Swarm dookola nici a vytvara nove kontaineri
+
+--
+
+### `journalctl -u docker -f` na vsetkych worker nodoch sa ako-tak da pouzit
+
+--
+
+## dost bieda :(
+
+---
+
+# TODOs
+
+## Networking
+
+## Security model
+
+## porovnanie s Fleet-om (co nam bude chybat v Swarm-e)
+
+</textarea>
+    <script src="https://remarkjs.com/downloads/remark-0.6.3.min.js" type="text/javascript">
+    </script>
+    <!-- Uncomment this if there is no internet -->
+
+    <!-- <script src="remark-0.6.3.min.js" type="text/javascript"> -->
+    <!--   </script> -->
+
+    <script type="text/javascript">
+      var slideshow = remark.create(      {
+        // Navigation options
+        navigation: {
+          // Enable or disable navigating using scroll
+          // Default: true
+          // Alternatives: false
+          scroll: false,
+        }
+      }
+      );
+    </script>
+  </body>
+</html>
